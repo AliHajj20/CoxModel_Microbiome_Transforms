@@ -1,0 +1,254 @@
+---
+title: "TreeSE_Coxmodel.qmd"
+format: html
+editor: visual
+---
+
+# I-Fitting a Cox proportional hazard model into all- pairwise log-ratio data format
+
+Load libraries
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library(mia)
+library(ggplot2)
+library(lattice)
+library(TreeSummarizedExperiment)
+library(coda4microbiome)
+library(SummarizedExperiment)
+library(tibble)
+library(phyloseq)
+```
+
+read the dataset
+```{r}
+load("~/Desktop/Microbiome_Analysis/TreeSE/biom.Rdata")
+```
+
+convert phyloseq object to TreeSE
+
+```{r}
+biom_TSE <- convertFromPhyloseq(biom)
+```
+
+split the data into training and testing subsets
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+# Split TreeSE into training and test sets by samples (columns)
+num_samples <- ncol(biom_TSE)
+train_indices <- sample(seq_len(num_samples), size = floor(0.7 * num_samples))
+test_indices <- setdiff(seq_len(num_samples), train_indices)
+
+# Subset TreeSE
+biom_TSE_train <- biom_TSE[, train_indices]
+biom_TSE_test <- biom_TSE[, test_indices]
+```
+
+Prepare data for Cox model training
+
+```{r}
+# Extract colData
+col_data_train <- as.data.frame(colData(biom_TSE_train))
+# Extract time-to-event and status from colData
+time <- col_data_train$T1Dweek   # numeric vector
+status <- col_data_train$T1D  # binary vector (0 = censored, 1 = event)
+covars <- col_data_train[, c("Antibiotics", "Sex")]  # update with correct column names
+# Extract abundance matrix (assumes 1st assay)
+x <- t(assay(biom_TSE_train))  # transpose: rows = samples, columns = features
+# Replace row names with only digits extracted from original row names
+rownames(x) <- gsub("\\D", "", rownames(x))
+colnames(x) <- gsub("\\D", "", colnames(x))
+```
+
+Train the Model
+
+```{r}
+coxmodel_logratio <- coda_coxnet(
+  as.matrix(x),
+  time = time,
+  status = status,
+  covar = covars,
+  lambda = "lambda.1se",
+  alpha = 0.9,
+  nfolds = 5,
+  showPlots = FALSE,
+  coef_threshold = 0.01
+)
+```
+
+output trained Cox model
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+print(coxmodel_logratio)
+```
+
+plot survival curve
+
+```{r}
+survcurve <- plot_survcurves(risk.score = coxmodel_logratio$risk.score,
+                             time,
+                             status,
+                             strata.quantile = 0.5)
+survcurve
+```
+
+Prepare the testing data
+
+```{r}
+#prepare the testing subset
+col_data_test <- as.data.frame(colData(biom_TSE_test))
+# Extract time-to-event and status from colData
+time_test <- col_data_test$T1Dweek   # numeric vector
+status_test <- col_data_test$T1D  # binary vector (0 = censored, 1 = event)
+covars_test <- col_data_test[, c("Antibiotics", "Sex")]  # update with correct column names
+# Extract abundance matrix (assumes 1st assay)
+x_test <- t(assay(biom_TSE_test))  # transpose: rows = samples, columns = features
+# Replace row names with only digits extracted from original row names
+rownames(x_test) <- gsub("\\D", "", rownames(x_test))
+colnames(x_test) <- gsub("\\D", "", colnames(x_test))
+```
+
+calculate the Risk Score
+
+```{r}
+# Ensure coef_vec is numeric and named
+coef_vec <- as.numeric(coef(coxmodel_logratio))
+names(coef_vec) <- names(coef(coxmodel_logratio))
+
+# Make sure x_test is a numeric matrix
+xt_tes <- as.matrix(x_test)
+
+# Align x_test columns to match the coefficient names
+x_test <- x_test[, names(coef_vec), drop = FALSE]
+
+# Compute the risk scores
+risk_score_test <- as.vector(x_test %*% coef_vec)
+```
+
+Calculates Harrell's C-index:
+
+```{r}
+library(survival)
+concordance <- survConcordance(Surv(time_test, status_test) ~ risk_score_test)
+print(concordance$concordance)
+```
+
+# II-Fitting a Cox proportional hazard model into centered log-ratio data format
+
+convert the data from all pairwise log ratio format to clr (centered log-ratio) data format
+
+```{r}
+biom_TSE_clr <- transformAssay(
+    x = biom_TSE,
+    assay.type = "counts",
+    method = "clr",
+    pseudocount = TRUE,
+    name = "clr"
+)
+```
+
+split the data to training and testing
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+# Split TreeSE into training and test sets by samples (columns)
+num_samples_1 <- ncol(biom_TSE_clr)
+train_indices_1 <- sample(seq_len(num_samples_1), size = floor(0.7 * num_samples_1))
+test_indices_1 <- setdiff(seq_len(num_samples), train_indices_1)
+
+# Subset TreeSE
+biom_TSE_clr_train <- biom_TSE_clr[, train_indices_1]
+biom_TSE_clr_test <- biom_TSE_clr[, test_indices_1]
+```
+
+Prepare data for Cox model training
+
+```{r}
+# Extract colData
+col_data_train <- as.data.frame(colData(biom_TSE_clr_train))
+# Extract time-to-event and status from colData
+time1 <- col_data_train$T1Dweek   # numeric vector
+status1 <- col_data_train$T1D  # binary vector (0 = censored, 1 = event)
+covars1 <- col_data_train[, c("Antibiotics", "Sex")]  # update with correct column names
+# Extract abundance matrix (assumes 1st assay)
+x1 <- t(assay(biom_TSE_clr_train))  # transpose: rows = samples, columns = features
+# Replace row names with only digits extracted from original row names
+rownames(x1) <- gsub("\\D", "", rownames(x1))
+colnames(x1) <- gsub("\\D", "", colnames(x1))
+```
+
+Train the model
+
+```{r}
+coxmodel_clr <- coda_coxnet(
+  as.matrix(x1),
+  time = time1,
+  status = status1,
+  covar = covars1,
+  lambda = "lambda.1se",
+  alpha = 0.9,
+  nfolds = 5,
+  showPlots = FALSE,
+  coef_threshold = 0.01
+)
+```
+
+output trained cox model
+
+```{r}
+print(coxmodel_clr)
+```
+
+plot survival curve
+
+```{r}
+survcurve <- plot_survcurves(risk.score = coxmodel_clr$risk.score,
+                             time1,
+                             status1,
+                             strata.quantile = 0.5)
+survcurve
+```
+
+prepare testing subset
+
+```{r}
+#prepare the testing subset
+col_data_test <- as.data.frame(colData(biom_TSE_test))
+# Extract time-to-event and status from colData
+time_test1 <- col_data_test$T1Dweek   # numeric vector
+status_test1 <- col_data_test$T1D  # binary vector (0 = censored, 1 = event)
+covars_test1 <- col_data_test[, c("Antibiotics", "Sex")]  # update with correct column names
+# Extract abundance matrix (assumes 1st assay)
+x_test1 <- t(assay(biom_TSE_test))  # transpose: rows = samples, columns = features
+# Replace row names with only digits extracted from original row names
+rownames(x_test1) <- gsub("\\D", "", rownames(x_test1))
+colnames(x_test1) <- gsub("\\D", "", colnames(x_test1))
+```
+
+i-risk score
+
+```{r}
+# Ensure coef_vec is numeric and named
+coef_vec <- as.numeric(coef(coxmodel_clr))
+names(coef_vec) <- names(coef(coxmodel_clr))
+
+# Make sure x_test1 is a numeric matrix
+x_test1 <- as.matrix(x_test1)
+
+# Align x_test1 columns to match the coefficient names
+x_test1 <- x_test1[, names(coef_vec), drop = FALSE]
+
+# Compute the risk scores
+risk_score_test1 <- as.vector(x_test1 %*% coef_vec)
+
+```
+
+ii- Harrell's C-index
+
+```{r}
+library(survival)
+concordance <- survConcordance(Surv(time_test1, status_test1) ~ risk_score_test1)
+print(concordance$concordance)
+```

@@ -1,0 +1,171 @@
+---
+title: "Cox_model_survival_data"
+format: html
+editor: visual
+---
+
+# I-Training the Cox model on all- pairwise log-ratio data format
+
+```{r}
+library(coda4microbiome)
+library(survival)
+library(phyloseq)
+```
+
+Assign the loaded object to a new variable 'phy' and display its summary
+
+load the data:
+
+```{r}
+phy <- biom
+phy
+```
+
+Agglomerate(merge) features that have the same genus then summing their abundance
+
+```{r}
+phyg <- tax_glom(phy, taxrank = "Genus" )
+```
+
+**remove rare taxa**—specifically, those that are absent (i.e., have zero counts) in **more than 95% of the samples**
+
+--\>focus on taxa that are likely to be biologically significant and provide more reliable results
+
+```{r}
+phyg_f = filter_taxa(phyg, function(x) (sum(x == 0)/length(x)) <= 0.95, TRUE)
+phyg_f
+```
+
+Loading coda4microbiome and preparing input data, survival time, status, and covariates
+
+```{r}
+library(coda4microbiome)
+# Set data
+x = data.frame(t(otu_table(phyg_f)))
+time = as.numeric(sample_data(phyg_f)$T1Dweek)
+status = as.numeric(sample_data(phyg_f)$T1D)
+covars = data.frame(sample_data(phyg_f)$Sex, # Gender
+                    sample_data(phyg_f)$Antibiotics) # Antibiotics
+```
+
+create train/test split( 70% train 30% test)
+
+```{r}
+set.seed(42)
+sample_ids <- sample_names(phyg_f)
+train_ids <- sample(sample_ids, size = floor(0.7 * length(sample_ids)))
+test_ids <- setdiff(sample_ids, train_ids)
+```
+
+Subsetting the Phyloseq Object into Training and Testing Datasets
+
+```{r}
+
+phy_train <- prune_samples(train_ids, phyg_f)
+phy_test  <- prune_samples(test_ids, phyg_f)
+```
+
+Prepare training data
+
+```{r}
+x_train <- data.frame(t(otu_table(phy_train))) #microbial abundance features
+time_train <- as.numeric(sample_data(phy_train)$T1Dweek) #
+status_train <- as.numeric(sample_data(phy_train)$T1D)
+covars_train <- data.frame(
+  Sex = sample_data(phy_train)$Sex,
+  Antibiotics = sample_data(phy_train)$Antibiotics
+)
+```
+
+train the model
+
+```{r}
+set.seed(12345)
+Trained_model_1 <- coda_coxnet(
+  x = x_train,
+  time = time_train,
+  status = status_train,
+  covar = covars_train,
+  lambda = "lambda.min",
+  alpha = 0.9,
+  nfolds = 5,
+  showPlots = TRUE,
+  coef_threshold = 0
+)
+```
+
+Prepare the testing data:
+
+```{r}
+x_test <- data.frame(t(otu_table(phy_test)))  # Microbial abundance features
+time_test <- as.numeric(sample_data(phy_test)$T1Dweek)
+status_test <- as.numeric(sample_data(phy_test)$T1D)
+covars_test <- data.frame(
+  Sex = sample_data(phy_test)$Sex,
+  Antibiotics = sample_data(phy_test)$Antibiotics
+)
+```
+
+```{r}
+coef_min <- coef(Trained_model_1$fit, s = Trained_model$lambda_min)
+
+```
+
+prepare testing data and generate the risk scores
+
+```{r}
+
+# Step 1: Extract and clean OTU table
+otu_mat <- as.data.frame(t(otu_table(phy_test)))
+
+colnames(otu_mat) <- make.names(colnames(otu_mat))  
+# Step 2: Extract coefficients and assign names
+coeffs <- Trained_model_1$`log-contrast coefficients`
+taxa_names <- Trained_model_1$taxa.name
+names(coeffs) <- taxa_names  # Now coeffs has names
+# Step3: select specific taxa
+selected_taxa <- names(coeffs)  # Now this is NOT NULL
+#subset the coloumns listed in the selected taxa
+x_test_selected <- otu_mat[, selected_taxa, drop = FALSE]
+#x_test_log <- x_test_selected #log(x_test_selected + 1e-6)
+# Step 4: Compute risk scores
+risk_score_test <- as.vector(as.matrix(x_test_selected) %*% coeffs)
+# Use the correct variable name (matching case)
+#x_test <- data.frame(t(otu_table(phy_test)))[                                  #Trained_model$selected_features, drop = FALSE] #non existed
+
+# Extract survival time from sample data
+time_test <- as.numeric(sample_data(phy_test)$T1Dweek)
+
+# Extract survival status (change 'status' to your actual column name if necessary)
+status_test <- as.numeric(sample_data(phy_test)$T1D) #"status columns not exists, T1D instead
+
+# Make sure covar_names is defined (same covariates used in training)
+covar_names <- colnames(covars_train)
+
+# Extract covariates from the test data (matching covar_names)
+covars_test <- data.frame(sample_data(phy_test))[ , covar_names, drop = FALSE]
+
+```
+
+evaluate the performance
+
+```{r}
+
+#this code is not working because the predict need a survival object!
+#See step above to generate the individual risk score from the test data
+c_index <- survConcordance(Surv(time_test, status_test) ~ risk_score_test)$concordance
+print(paste("Test set C-index:", round(c_index, 3)))
+```
+
+survival curve plot:
+
+```{r}
+survcurve <- plot_survcurves(risk.score = risk_score_test,
+                             time_test,
+                             status_test,
+                             strata.quantile = 0.5)
+survcurve
+
+
+T1Dmodel
+```
