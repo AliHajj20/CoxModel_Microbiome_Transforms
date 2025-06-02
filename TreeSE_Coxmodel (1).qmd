@@ -1,0 +1,204 @@
+---
+title: "TreeSE_Coxmodel.qmd"
+format: html
+editor: visual
+---
+
+## This report focuses on evaluating the predictive performance of the Cox proportional hazards model under transformed and untransformed data. The primary objective is to identify which transformation method allows the Cox model to yield the most accurate survival predictions. By systematically applying distinct transformations to the data-set and assessing the model’s performance, this study aims to provide insights into optimizing data pre-processing for survival analysis.
+
+## I-Fitting a Cox proportional hazard model into all- pairwise log-ratio data format
+
+Load libraries
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library(mia)
+library(ggplot2)
+library(lattice)
+library(TreeSummarizedExperiment)
+library(coda4microbiome)
+library(SummarizedExperiment)
+library(tibble)
+library(phyloseq)
+library(survival)
+library(survival)
+```
+
+link to download the biom.Rdata dataset: https://github.com/wg99526/MiSurvGit/tree/main/Data
+
+```{r}
+load("~/Desktop/Microbiome_Analysis/TreeSE/biom.Rdata")
+```
+
+convert phyloseq object to TreeSE
+
+```{r}
+tse <- convertFromPhyloseq(biom)
+```
+
+split the data into training and testing subsets
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+# Split TreeSE into training and test sets by samples (columns)
+num_samples <- ncol(tse)
+train_indices <- sample(seq_len(num_samples), size = floor(0.7 * num_samples))
+test_indices <- setdiff(seq_len(num_samples), train_indices)
+# Subset TreeSE
+tse_train <- tse[, train_indices]
+tse_test <- tse[, test_indices]
+```
+
+Preparel training data
+
+```{r}
+# Extract colData
+col_data_train <- as.data.frame(colData(tse_train))
+# Extract time-to-event and status from colData
+time <- col_data_train$T1Dweek   # numeric vector
+status <- col_data_train$T1D  # binary vector (0 = censored, 1 = event)
+covars <- col_data_train[, c("Antibiotics", "Sex")]  # update with correct column names
+# Extract abundance matrix (assumes 1st assay)
+x <- t(assay(tse_train))  # transpose: rows = samples, columns = features
+# Replace row names with only digits extracted from original row names
+rownames(x) <- gsub("\\D", "", rownames(x))
+colnames(x) <- gsub("\\D", "", colnames(x))
+```
+
+Prepare testing data
+
+```{r}
+#prepare the testing subset
+col_data_test <- as.data.frame(colData(tse_test))
+# Extract time-to-event and status from colData
+time_test <- col_data_test$T1Dweek   # numeric vector
+status_test <- col_data_test$T1D  # binary vector (0 = censored, 1 = event)
+covars_test <- col_data_test[, c("Antibiotics", "Sex")]  # update with correct column names
+# Extract abundance matrix (assumes 1st assay)
+x_test <- t(assay(tse_test))  # transpose: rows = samples, columns = features
+# Replace row names with only digits extracted from original row names
+rownames(x_test) <- gsub("\\D", "", rownames(x_test))
+colnames(x_test) <- gsub("\\D", "", colnames(x_test))
+```
+
+transform the assay to all pairwise log ratio format
+
+```{r}
+coef_threshold = 0
+lambda = "lambda.1se" 
+nvar = NULL
+alpha = 0.9
+nfolds = 10
+showPlots = TRUE
+x <- impute_zeros(x)
+kselect <- ncol(x)
+taxaselect <- (1:ncol(x))
+lrmatrix <- logratios_matrix(x)
+lrX <- lrmatrix[[1]]
+idlrX <- lrmatrix[[2]]
+nameslrX <- lrmatrix[[3]]
+#transform the assay from the testing subset:
+lrmatrix_test <- logratios_matrix(x_test)
+lrX_test <- lrmatrix[[1]]
+```
+
+implement cox model
+
+```{r}
+y = Surv(time, status)# Cox response variable (time & status)
+# fits a standard Cox proportional hazards model (coxph) using all covariates
+df0 <- data.frame(as.matrix(y), covars)
+model0 <- coxph(Surv(time, status) ~ ., data = df0)
+x0 <- predict(model0)#linear predictor
+#Penalized Cox Model with Offset
+cvfit <- glmnet::cv.glmnet(lrX, y, family = "cox",
+                               type.measure = "C",
+                               nfolds = nfolds, alpha = alpha,
+                               keep = TRUE,
+                               offset = x0)
+plot(cvfit)
+predictions<-as.numeric(predict(cvfit,lrX,s=lambda, newoffset=x0))
+Cindex_signature <- glmnet::Cindex(pred = predictions, y)
+print(Cindex_signature)
+```
+
+## II-Fitting a Cox proportional hazard model into centered log-ratio data format
+
+```{r}
+tse <- convertFromPhyloseq(biom)
+```
+
+implement cox model on un-transformed data
+
+```{r}
+y = Surv(time, status)# Cox response variable (time & status)
+# fits a standard Cox proportional hazards model (coxph) using all covariates
+df0 <- data.frame(as.matrix(y), covars)
+model1 <- coxph(Surv(time, status) ~ ., data = df0)
+x0 <- predict(model1)#linear predictor
+#Penalized Cox Model with Offset
+cvfit1 <- glmnet::cv.glmnet(x, y, family = "cox",
+                               type.measure = "C",
+                               nfolds = nfolds, alpha = alpha,
+                               keep = TRUE,
+                               offset = x0)
+plot(cvfit)
+```
+
+evaluate model performance
+
+```{r}
+# Define models and their corresponding test matrices
+models <- list(
+transformed = list(model = model0, cvfit = cvfit, x_test = lrX_test, x_train = lrX),
+untransformed = list(model = model1, cvfit = cvfit1, x_test = x_test, x_train = x)
+)
+
+# Prepare result list to store C-index for each version
+cindex_results <- list()#create an empty list
+
+# Loop through each model type
+for (type in names(models)) {
+cat("\n--- Testing:", type, "---\n")
+  
+# Extract components
+current_model <- models[[type]]$model
+current_cvfit <- models[[type]]$cvfit
+current_x_test <- models[[type]]$x_test
+  
+# Ensure consistent row filtering
+complete_cases <- complete.cases(covars_test) & 
+                  complete.cases(current_x_test) & 
+                  !is.na(time_test) & !is.na(status_test)
+  
+# Clean testing data
+covars_test_clean <- covars_test[complete_cases, , drop = FALSE]
+x_test_clean <- current_x_test[complete_cases, , drop = FALSE]
+time_test_clean <- time_test[complete_cases]
+status_test_clean <- status_test[complete_cases]
+  
+# Baseline prediction using covariates only
+x0_test_clean <- predict(current_model, 
+                           newdata = as.data.frame(covars_test_clean), 
+                           type = "lp")
+  
+# Predict using penalized model
+lambda_value <- current_cvfit$lambda.min
+test_predictions <- predict(current_cvfit, 
+                              newx = x_test_clean, 
+                              s = lambda_value, 
+                              newoffset = x0_test_clean, 
+                              type = "link")
+  
+# Calculate C-index
+test_cindex <- glmnet::Cindex(pred = as.numeric(test_predictions),
+y = Surv(time_test_clean, status_test_clean))
+  
+# Store results
+cindex_results[[type]] <- test_cindex
+  
+# Print for inspection
+cat("Samples used:", length(time_test_clean), "\n")
+cat("C-index:", round(test_cindex, 4), "\n")
+}
+```
