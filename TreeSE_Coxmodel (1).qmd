@@ -4,7 +4,7 @@ format: html
 editor: visual
 ---
 
-## This report focuses on evaluating the predictive performance of the Cox proportional hazards model under transformed and untransformed data. The primary objective is to identify which transformation method allows the Cox model to yield the most accurate survival predictions. By systematically applying distinct transformations to the data-set and assessing the model’s performance, this study aims to provide insights into optimizing data pre-processing for survival analysis.
+## This report focuses on evaluating the predictive performance of the Cox proportional hazards model under transformed and un-transformed data. The primary objective is to identify which transformation method allows the Cox model to yield the most accurate survival predictions. By systematically applying distinct transformations to the data-set and assessing the model’s performance, this study aims to provide insights into optimizing data pre-processing for survival analysis.
 
 ## I-Fitting a Cox proportional hazard model into all- pairwise log-ratio data format
 
@@ -49,7 +49,7 @@ tse_train <- tse[, train_indices]
 tse_test <- tse[, test_indices]
 ```
 
-Preparel training data
+Prepare training data
 
 ```{r}
 # Extract colData
@@ -105,6 +105,7 @@ lrX_test <- lrmatrix[[1]]
 implement cox model
 
 ```{r}
+set.seed(123)
 y = Surv(time, status)# Cox response variable (time & status)
 # fits a standard Cox proportional hazards model (coxph) using all covariates
 df0 <- data.frame(as.matrix(y), covars)
@@ -119,7 +120,62 @@ cvfit <- glmnet::cv.glmnet(lrX, y, family = "cox",
 plot(cvfit)
 predictions<-as.numeric(predict(cvfit,lrX,s=lambda, newoffset=x0))
 Cindex_signature <- glmnet::Cindex(pred = predictions, y)
-print(Cindex_signature)
+```
+
+Generate plots
+
+```{r}
+rowlasso <- max(which(cvfit$glmnet.fit$df <= nvar))
+lambdavalue <- lambda
+  if (is.character(lambda)) {
+    if (lambda == "lambda.1se")
+      lambdavalue <- cvfit$lambda.1se
+    if (lambda == "lambda.min")
+      lambdavalue <- cvfit$lambda.min
+  }
+idrow <- max(which(cvfit$glmnet.fit$lambda >= lambdavalue))
+coeflr <- as.vector(coef(cvfit, s = lambda)) #[-1]
+lrselect <- which(coeflr != 0)
+coeflogcontrast <- rep(0, ncol(x))
+for (i in (1:length(coeflr))) {
+coeflogcontrast[idlrX[i, 1]] <- coeflogcontrast[idlrX[i,1]] +  coeflr[i]
+coeflogcontrast[idlrX[i, 2]] <- coeflogcontrast[idlrX[i,2]] -   coeflr[i]
+  }
+varlogcontrast <- which(abs(coeflogcontrast) > coef_threshold)
+coeflogcontrast <- coeflogcontrast[varlogcontrast]
+
+(names.select <- colnames(x)[varlogcontrast])
+(sign <- ifelse(coeflogcontrast > 0, 1, 0))
+sign <- factor(sign, levels = c(0, 1), labels = c("negative",
+                                                    "positive"))
+logcontrast = as.matrix(log(x)[, varlogcontrast]) %*% coeflogcontrast # Bacterial signature
+
+
+
+#predictions<-x0+logcontrast
+predictions<-as.numeric(predict(cvfit,lrX,s=lambdavalue, newoffset=x0))
+
+coeflogcontrast<-2*coeflogcontrast/sum(abs(coeflogcontrast))
+
+if (length(varlogcontrast) == 0){
+    Cindex_signature <- 0.5
+  } else {
+    Cindex_signature <- glmnet::Cindex(pred=predictions, y)     # Apparent C-Index
+  }
+mcvCindex <- cvfit$cvm[idrow]
+sdcvCindex <- cvfit$cvsd[idrow]
+
+plot1<-NULL
+plot2<-NULL
+
+if (length(lrselect>0)){
+
+plot1 <- plot_riskscore(predictions, x, time, status, showPlots = showPlots)
+plot2 <- plot_signature(names.select, coeflogcontrast, showPlots = showPlots)
+
+  } else {
+    print("No variables are selected. The risk score plot and the signature plot are not displayed.")
+  }
 ```
 
 ## II-Fitting a Cox proportional hazard model into centered log-ratio data format
@@ -131,6 +187,7 @@ tse <- convertFromPhyloseq(biom)
 implement cox model on un-transformed data
 
 ```{r}
+set.seed(123)
 y = Surv(time, status)# Cox response variable (time & status)
 # fits a standard Cox proportional hazards model (coxph) using all covariates
 df0 <- data.frame(as.matrix(y), covars)
@@ -142,12 +199,69 @@ cvfit1 <- glmnet::cv.glmnet(x, y, family = "cox",
                                nfolds = nfolds, alpha = alpha,
                                keep = TRUE,
                                offset = x0)
-plot(cvfit)
+plot(cvfit1)
+predictions1<-as.numeric(predict(cvfit1,x,s=lambda, newoffset=x0))
+Cindex_signature <- glmnet::Cindex(pred = predictions1, y)
 ```
 
-evaluate model performance
+Generate plots
 
 ```{r}
+rowlasso <- max(which(cvfit$glmnet.fit$df <= nvar))
+
+lambdavalue <- lambda
+if (is.character(lambda)) {
+  if (lambda == "lambda.1se")
+    lambdavalue <- cvfit$lambda.1se
+  if (lambda == "lambda.min")
+    lambdavalue <- cvfit$lambda.min
+}
+
+idrow <- max(which(cvfit$glmnet.fit$lambda >= lambdavalue))
+coeflr <- as.vector(coef(cvfit, s = lambda))
+lrselect <- which(coeflr != 0)
+
+coeflogcontrast <- rep(0, ncol(x))
+for (i in (1:length(coeflr))) {
+  coeflogcontrast[idlrX[i, 1]] <- coeflogcontrast[idlrX[i, 1]] + coeflr[i]
+  coeflogcontrast[idlrX[i, 2]] <- coeflogcontrast[idlrX[i, 2]] - coeflr[i]
+}
+
+varlogcontrast <- which(abs(coeflogcontrast) > coef_threshold)
+coeflogcontrast <- coeflogcontrast[varlogcontrast]
+
+names.select <- colnames(x)[varlogcontrast]
+sign <- ifelse(coeflogcontrast > 0, 1, 0)
+sign <- factor(sign, levels = c(0, 1), labels = c("negative", "positive"))
+
+# Removed logcontrast line (log transformation)
+
+predictions <- as.numeric(predict(cvfit1, x, s = lambdavalue, newoffset = x0))
+
+
+
+  Cindex_signature <- glmnet::Cindex(pred = predictions, y)
+
+
+mcvCindex <- cvfit$cvm[idrow]
+sdcvCindex <- cvfit$cvsd[idrow]
+
+plot1 <- NULL
+plot2 <- NULL
+
+if (length(lrselect > 0)) {
+  plot1 <- plot_riskscore(predictions, x, time, status, showPlots = showPlots)
+  plot2 <- plot_signature(names.select, coeflogcontrast, showPlots = showPlots)
+} else {
+  print("No variables are selected. The risk score plot and the signature plot are not displayed.")
+}
+
+```
+
+evaluate model performance on transformed and un-transformed data
+
+```{r}
+set.seed(123)
 # Define models and their corresponding test matrices
 models <- list(
 transformed = list(model = model0, cvfit = cvfit, x_test = lrX_test, x_train = lrX),
