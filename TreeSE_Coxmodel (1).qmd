@@ -100,6 +100,7 @@ nameslrX <- lrmatrix[[3]]
 #transform the assay from the testing subset:
 lrmatrix_test <- logratios_matrix(x_test)
 lrX_test <- lrmatrix[[1]]
+lrX_test <- lrmatrix_test[[1]]
 ```
 
 implement cox model
@@ -249,7 +250,7 @@ sdcvCindex <- cvfit$cvsd[idrow]
 plot1 <- NULL
 plot2 <- NULL
 
-if (length(lrselect > 0)) {
+if (length(lrselect) > 0) {
   plot1 <- plot_riskscore(predictions, x, time, status, showPlots = showPlots)
   plot2 <- plot_signature(names.select, coeflogcontrast, showPlots = showPlots)
 } else {
