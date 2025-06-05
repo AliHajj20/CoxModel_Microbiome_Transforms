@@ -99,8 +99,7 @@ idlrX <- lrmatrix[[2]]
 nameslrX <- lrmatrix[[3]]
 #transform the assay from the testing subset:
 lrmatrix_test <- logratios_matrix(x_test)
-lrX_test <- lrmatrix[[1]]
-lrX_test <- lrmatrix_test[[1]]
+lrX_test <- lrmatrix_test[[1]] 
 ```
 
 implement cox model
@@ -296,14 +295,22 @@ status_test_clean <- status_test[complete_cases]
 x0_test_clean <- predict(current_model, 
                            newdata = as.data.frame(covars_test_clean), 
                            type = "lp")
-  
+# Evaluate offset-only (covariates-only) model performance
+offset_only_cindex <- glmnet::Cindex(pred = x0_test_clean, 
+                                     y = Surv(time_test_clean, status_test_clean))
+cat("Offset-only model C-index:", round(offset_only_cindex, 4), "\n")
+
 # Predict using penalized model
 lambda_value <- current_cvfit$lambda.min
 test_predictions <- predict(current_cvfit, 
-                              newx = x_test_clean, 
-                              s = lambda_value, 
-                              newoffset = x0_test_clean, 
-                              type = "link")
+                            newx = x_test_clean, 
+                            s = lambda_value, 
+                            newoffset = x0_test_clean, 
+                            type = "link")
+
+# Flip prediction sign to correct risk ordering
+test_predictions <- -as.numeric(test_predictions)
+
   
 # Calculate C-index
 test_cindex <- glmnet::Cindex(pred = as.numeric(test_predictions),
